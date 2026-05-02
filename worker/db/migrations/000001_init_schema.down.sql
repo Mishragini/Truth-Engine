@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS search_responses;
+DROP EXTENSION IF EXISTS vector;
