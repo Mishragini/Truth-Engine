@@ -3,7 +3,8 @@ import cors from "cors"
 import { PORT } from "./lib/config"
 import { RedisManager } from "./lib/redisManager"
 import expressWs from "express-ws"
-import { clientType } from "./lib/types"
+import { clientType, pubsubResType, type pubsubRes, type SSEResponse } from "./lib/types"
+import { useSSEMiddleware } from "./lib/sseMiddleware"
 
 const { app } = expressWs(express())
 
@@ -18,9 +19,11 @@ app.get("/search", async (req, res) => {
             return
         }
         const instance = await RedisManager.getInstance(clientType.normal)
-        const cache_response = await instance.searchFromCache(search_query as string)
+        const cache_response = await instance.searchFromCache(search_query)
         if (cache_response) {
-            res.json({ "response": cache_response })
+            const parsed_cache = JSON.parse(cache_response)
+
+            res.json({ "query_id": parsed_cache.query_id, "response": parsed_cache.response })
             return;
         }
 
@@ -36,75 +39,58 @@ app.get("/search", async (req, res) => {
     }
 })
 
-app.ws("/:requestId", async (ws, req) => {
-    const redis_instance = await RedisManager.getInstance(clientType.pubsub)
-    const request_id = req.params.requestId as string
-    if (!request_id) {
-        const message = {
-            "success": false,
-            "data": {
-                "error": "Request id is required."
-            }
-        }
-        ws.send(JSON.stringify(message))
-    }
 
-    ws.on('message', async (data: string) => {
-        try {
-            const { search_query } = JSON.parse(data)
-            if (!search_query) {
-                const message = {
-                    "success": false,
-                    "data": {
-                        "error": "Search query is required."
-                    }
-                }
-                ws.send(JSON.stringify(message))
-            }
-            const cache_response = await redis_instance.searchFromCache(search_query)
+
+app.get("/search/:queryId", useSSEMiddleware, async (req, res) => {
+    const sse_res = res as SSEResponse
+
+    try {
+        //check the cache again to check if the worker has alr finished processing the request and added it to the cache
+        const query_id = req.params.queryId as string
+        console.log("query_id", query_id)
+        if (!query_id.trim()) {
+            sse_res.sendEventStreamData("error", { message: "Query id is required" });
+            res.end();
+            return
+        }
+
+        const normal_instance = await RedisManager.getInstance(clientType.normal)
+        const search_query = await normal_instance.searchFromCache(query_id)
+        if (search_query) {
+            const cache_response = await normal_instance.searchFromCache(search_query)
             if (cache_response) {
-                const message = {
-                    "success": true,
-                    "data": {
-                        "response": cache_response
-                    }
-                }
-                ws.send(JSON.stringify(message))
+                const parsed_cache = JSON.parse(cache_response)
+                sse_res.sendEventStreamData("full_response", parsed_cache.response)
+                res.end()
+                return;
             }
-
-            await redis_instance.subscribe(request_id, (message) => {
-                const { type, payload } = JSON.parse(message)
-                const ws_message = {
-                    "success": true,
-                    "data": {
-                        "type": type,
-                        "payload": payload
-                    }
-                }
-                ws.send(JSON.stringify(ws_message))
-            })
-        } catch (error) {
-            const data = {
-                "success": false,
-                "data": {
-                    "error": error instanceof Error ? error.message : "Something went wrong!"
-                }
-            }
-            ws.send(JSON.stringify(data))
         }
 
-    })
+        const pubsub_instance = await RedisManager.getInstance(clientType.pubsub)
+        //subscribe to the pubsub, waiting for the message
+        await pubsub_instance.subscribe(query_id, async (data) => {
+            const { type, payload } = JSON.parse(data) as pubsubRes
 
+            sse_res.sendEventStreamData(type, payload)
+            if (type === pubsubResType.full_response) {
+                res.end()
+                await pubsub_instance.unsubscribe(query_id)
+            }
+        })
 
-    ws.on('close', async () => {
-        await redis_instance.unsubscribe(request_id)
-    })
-
-    ws.on('error', async () => {
-        await redis_instance.unsubscribe(request_id)
-    })
-
+        req.on('close', () => {
+            res.end()
+            pubsub_instance.unsubscribe(query_id)
+        })
+        //if the type is full response return full_response if the type is chunk stream the response
+    } catch (error) {
+        console.log("herererere...")
+        const error_message = error instanceof Error ? error.message : "Something went wrong"
+        sse_res.sendEventStreamData("error", { message: error_message });
+        res.end();
+    }
 })
+
 
 app.get("/health", (req, res) => {
     res.json({ message: "Server is healthy!" })

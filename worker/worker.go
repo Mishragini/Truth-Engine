@@ -16,6 +16,11 @@ import (
 	"github.com/sashabaranov/go-openai"
 )
 
+type cacheData struct {
+	AIResponse string `json:"response"`
+	QueryID    string `json:"query_id"`
+}
+
 func worker(ctx context.Context, result string, redisClient *redis.Client, pubsubClient *redis.Client, dbPool *pgxpool.Pool, httpClient *http.Client, openAiClient *openai.Client, jinaApiKey string) error {
 	var query utils.Query
 	err := json.Unmarshal([]byte(result), &query)
@@ -52,7 +57,7 @@ func worker(ctx context.Context, result string, redisClient *redis.Client, pubsu
 		return err
 	}
 
-	if len(data) <= 0 {
+	if len(data) == 0 {
 		keywords, err := utils.ExtractKeywords(ctx, openAiClient, query.SearchQuery)
 		if err != nil {
 			return err
@@ -70,10 +75,18 @@ func worker(ctx context.Context, result string, redisClient *redis.Client, pubsu
 	}
 
 	var resources []*utils.Resource
-	for _, result := range data {
-		resources = append(resources, result.Resources...)
+	for _, sr := range data {
+		resources = append(resources, sr.Resources...)
 	}
 	stream, err := utils.PromptLlm(ctx, openAiClient, resources, query.SearchQuery)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := stream.Close(); err != nil {
+			fmt.Printf("stream close error: %v\n", err)
+		}
+	}()
 	var b strings.Builder
 	for {
 		chunk, err := stream.Recv()
@@ -89,7 +102,7 @@ func worker(ctx context.Context, result string, redisClient *redis.Client, pubsu
 
 		token := chunk.Choices[0].Delta.Content
 
-		fmt.Fprintf(&b, "%v", token)
+		b.WriteString(token)
 
 		msg := utils.WSMessage{
 			Type:    "chunk",
@@ -103,6 +116,17 @@ func worker(ctx context.Context, result string, redisClient *redis.Client, pubsu
 
 	aiResponse := b.String()
 
+	// signal to the route handler that streaming is complete
+	msg := utils.WSMessage{
+		Type:    "full_response",
+		Payload: aiResponse,
+	}
+
+	err = utils.PublishMessage(ctx, pubsubClient, query.QueryId, msg)
+	if err != nil {
+		return err
+	}
+
 	saveResponse := utils.SaveResponseDb{
 		Query:     query.SearchQuery,
 		Embedding: *embedding,
@@ -113,7 +137,7 @@ func worker(ctx context.Context, result string, redisClient *redis.Client, pubsu
 	if err != nil {
 		return err
 	}
-	cacheValue, err := json.Marshal(aiResponse)
+	cacheValue, err := json.Marshal(cacheData{AIResponse: aiResponse, QueryID: query.QueryId})
 	if err != nil {
 		return err
 	}

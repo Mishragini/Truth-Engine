@@ -42,7 +42,10 @@ func GetExistingResponse(ctx context.Context, dbPool *pgxpool.Pool, query string
 	var existingRes SearchResponse
 	sqlQuery := `SELECT response,query_embedding,valid_till FROM search_responses WHERE query = $1 AND valid_till > now()`
 	err := dbPool.QueryRow(ctx, sqlQuery, query).Scan(&existingRes.Response, &existingRes.Embedding, &existingRes.ValidTill)
-	if err != nil && err != pgx.ErrNoRows {
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return &existingRes, nil
@@ -61,7 +64,7 @@ func SaveResponse(ctx context.Context, dbPool *pgxpool.Pool, searchResponse util
 		VALUES ($1,$2,$3,now() + interval '24 hours')
 		ON CONFLICT (query) DO UPDATE
 			SET query_embedding = EXCLUDED.query_embedding,
-				response = EXCLUDED.response
+				response = EXCLUDED.response,
 				valid_till = EXCLUDED.valid_till
 		RETURNING id`,
 		searchResponse.Query,

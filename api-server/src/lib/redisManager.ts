@@ -39,12 +39,11 @@ export class RedisManager {
         return RedisManager.instance
     }
 
-    public async searchFromCache(search_query: string) {
-        const cache_key = search_query
+    public async searchFromCache(cache_key: string) {
         const cache_search_response = await this.normalClient.get(cache_key)
 
         if (cache_search_response) {
-            return JSON.parse(cache_search_response)
+            return cache_search_response
         }
         return null
     }
@@ -55,7 +54,10 @@ export class RedisManager {
             query_id,
             search_query: data.search_query,
         }
-        await this.normalClient.lPush("search_query", JSON.stringify(query_data))
+        const pipeline = this.normalClient.multi()
+        pipeline.lPush("search_query", JSON.stringify(query_data))
+        pipeline.set(query_id, data.search_query, { EX: 24 * 3600 })
+        await pipeline.exec()
         return query_id
     }
 

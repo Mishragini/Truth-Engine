@@ -26,7 +26,7 @@ func NewRedisClient(ctx context.Context, cfg *config.Config) (*redis.Client, err
 func PublishMessage(ctx context.Context, client *redis.Client, queryId string, msg WSMessage) error {
 	bytes, err := json.Marshal(msg)
 	if err != nil {
-		return nil
+		return err
 	}
 	return client.Publish(ctx, queryId, string(bytes)).Err()
 }

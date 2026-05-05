@@ -65,7 +65,7 @@ func StoryComment(ctx context.Context, objectId string, httpClient *http.Client)
 		return nil, err
 	}
 
-	for i, _ := range itemRes.Children {
+	for i := range itemRes.Children {
 		sanitizedText, err := Sanitize(itemRes.Children[i].Text)
 		if err != nil {
 			return nil, err
@@ -129,7 +129,7 @@ func FetchHackerNews(ctx context.Context, query string, httpClient *http.Client)
 			resource.Title = hit.Title
 			if hit.Url != nil {
 				content := []string{*hit.Url}
-			    resource.Content = content
+				resource.Content = content
 			}
 			resources = append(resources, resource)
 		}
